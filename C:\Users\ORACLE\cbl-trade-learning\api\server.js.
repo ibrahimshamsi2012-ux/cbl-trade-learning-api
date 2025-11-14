@@ -1,0 +1,137 @@
+// --- REQUIRED IMPORTS ---
+const express = require("express");
+const cors = require("cors"); 
+const { Low } = require("lowdb");
+const { JSONFile } = require("lowdb/node");
+const path = require('path');
+
+// Initialize the Express app
+const app = express();
+
+// --- DB SETUP ---
+// Using LowDB for mock persistence on the serverless function filesystem
+const file = path.join(process.cwd(), 'db.json'); 
+const adapter = new JSONFile(file);
+const db = new Low(adapter, { users: [] }); 
+db.read(); 
+
+// Middleware
+app.use(express.json());
+app.use(cors()); 
+
+// --- AUTH ROUTES (Fixes 404s on application startup) ---
+
+// FIX 1: Missing /api/tokens route (Returns a mock token)
+app.get("/api/tokens", (req, res) => {
+    // This satisfies the client's request for a security or session token.
+    res.json({ token: "MOCK_SECURITY_TOKEN_12345" });
+});
+
+// FIX 2: Missing /api/login route (Returns a mock user session)
+app.post("/api/login", async (req, res) => {
+    const { username } = req.body;
+    await db.read();
+    
+    // Check if user exists (created via /api/signup)
+    const user = db.data.users.find((u) => u.username === username);
+
+    if (user) {
+        // User found, return existing data
+        return res.json({ 
+            success: true, 
+            message: "Login successful",
+            user: { username: user.username, balance: user.balance } 
+        });
+    } else {
+        // If user not found, create a dummy one so the application loads smoothly
+        const newUsername = username || "DefaultUser";
+        db.data.users.push({ 
+            username: newUsername, 
+            balance: 20000, 
+            trades: [] 
+        });
+        await db.write();
+        
+        return res.json({ 
+            success: true, 
+            message: "Login successful (new user created)",
+            user: { username: newUsername, balance: 20000 } 
+        });
+    }
+});
+
+
+// --- CORE APPLICATION ROUTES ---
+
+// Root Health Check (Vercel often checks this)
+app.get("/", (req, res) => {
+    res.status(200).send("CBL Trade Learning API is running successfully.");
+});
+
+// Price data route
+app.get("/api/price", async (req, res) => {
+    // Generate simple mock price data
+    const priceHistory = [
+        { price: 100.00 }, { price: 101.50 }, { price: 99.80 }, 
+        { price: 102.10 }, { price: 103.50 }, { price: 104.20 },
+        { price: 105.10 }, { price: 104.90 }, { price: 106.50 },
+        { price: 107.00 }, { price: 108.30 }, { price: 109.10 }
+    ];
+    const lastPrice = priceHistory[priceHistory.length - 1].price;
+    const newPrice = lastPrice + (Math.random() - 0.5) * 0.5; 
+    priceHistory.push({ price: newPrice });
+
+    res.json({ price_history: priceHistory });
+});
+
+// AI recommendation route
+app.get("/api/ai-recommendation", async (req, res) => {
+    const recommendations = [
+        "Current market volume is low, suggesting caution before a major trade.",
+        "The simulated asset shows a positive short-term trend; a small buy order may be advisable.",
+        "Monitor for a price drop below $105, which could signal a trend reversal."
+    ];
+    res.json({ recommendations: recommendations });
+});
+
+// User signup simulation
+app.post("/api/signup", async (req, res) => {
+  const { username } = req.body;
+  await db.read(); 
+  const exists = db.data.users.find((u) => u.username === username);
+  if (exists) return res.status(400).json({ message: "User already exists" });
+  
+  db.data.users.push({ username, balance: 20000, trades: [] });
+  await db.write();
+  res.json({ message: "Signup successful", user: { username, balance: 20000 } });
+});
+
+// Testnet trade simulator
+app.post("/api/trade", async (req, res) => {
+  const { username, symbol, amount } = req.body;
+  await db.read();
+  const user = db.data.users.find((u) => u.username === username);
+  if (!user) return res.status(404).json({ message: "User not found" });
+
+  user.trades.push({ symbol, amount, time: new Date().toISOString() });
+  user.balance -= amount;
+  await db.write();
+  res.json({ message: "Trade completed", user });
+});
+
+// AI chatbot simulation (local logic)
+app.post("/api/chat", async (req, res) => {
+  const { message } = req.body;
+  let reply = "I'm not sure I understand.";
+  if (message.toLowerCase().includes("price")) {
+    reply = "You can view live prices on the dashboard!";
+  } else if (message.toLowerCase().includes("trade")) {
+    reply = "Use the Trade tab to simulate testnet trading!";
+  } else if (message.toLowerCase().includes("wallet")) {
+    reply = "Your wallet balance updates automatically after trades.";
+  }
+  res.json({ reply });
+});
+
+// --- EXPORT THE EXPRESS APP FOR VERCEL ---
+module.exports = app;
